@@ -1,0 +1,25 @@
+name: Идея или предложение (Feature Request)
+description: Предложите новую функцию или улучшение для Nowcast Pure
+title: "[Идея]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо, что помогаете развивать проект! Проект находится в активной разработке, поэтому мы рады любым крутым предложениям.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Какую проблему решит эта функция?
+      description: Опишите, чего вам не хватает в текущей версии Nowcast Pure.
+      placeholder: Например, хотелось бы поддержку нового плеера или возможность...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Ваше предложение
+      description: Как именно это должно работать?
+      placeholder: Предлагаю добавить...
+    validations:
+      required: true

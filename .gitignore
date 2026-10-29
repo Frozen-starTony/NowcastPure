@@ -1,0 +1,22 @@
+# Binaries and build outputs
+*.exe
+*.dll
+*.pdb
+*.obj
+*.log
+debug.log
+
+# User local configuration
+config.json
+
+# Visual Studio / Rider
+.vs/
+.idea/
+*.user
+*.suo
+
+# Windows temporary files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/

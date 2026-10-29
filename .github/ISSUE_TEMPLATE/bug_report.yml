@@ -1,0 +1,30 @@
+name: Сообщить об ошибке (Bug Report)
+description: Сообщить о баге, падении или проблеме со статусом
+title: "[Баг]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Спасибо за сообщение о проблеме! Пожалуйста, укажите детали ниже.
+  - type: textarea
+    id: description
+    attributes:
+      label: Описание проблемы
+      description: Что пошло не так?
+    validations:
+      required: true
+  - type: input
+    id: player
+    attributes:
+      label: Какой плеер использовался?
+      placeholder: Например, Яндекс Музыка (Desktop), Chrome YouTube, Spotify...
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Версия Windows
+      placeholder: Windows 11 23H2 / Windows 10
+    validations:
+      required: false
