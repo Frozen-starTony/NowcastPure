@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
+using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
@@ -10,10 +11,14 @@ namespace NowcastPure
     public class TrayApplication : ApplicationContext
     {
         private readonly NotifyIcon notifyIcon;
-        private readonly Timer timer;
         private readonly MediaManager mediaManager;
         private readonly DiscordRpc discordRpc;
         private readonly UserSettings settings;
+        private readonly Control uiControl;
+
+        private readonly Thread engineThread;
+        private readonly AutoResetEvent wakeEvent;
+        private volatile bool isStopping;
 
         private MenuItem trackMenuItem;
         private MenuItem discordMenuItem;
@@ -49,6 +54,10 @@ namespace NowcastPure
             settings = UserSettings.Load();
             mediaManager = new MediaManager();
             discordRpc = new DiscordRpc();
+            wakeEvent = new AutoResetEvent(false);
+
+            uiControl = new Control();
+            uiControl.CreateControl();
 
             var contextMenu = new ContextMenu();
 
@@ -106,12 +115,14 @@ namespace NowcastPure
                 Visible = true
             };
 
-            timer = new Timer();
-            timer.Interval = 1500;
-            timer.Tick += OnTick;
-            timer.Start();
-
-            OnTick(null, EventArgs.Empty);
+            // Start dedicated background engine thread (never freezes UI)
+            engineThread = new Thread(EngineLoop)
+            {
+                IsBackground = true,
+                Name = "MediaEngine"
+            };
+            engineThread.SetApartmentState(ApartmentState.STA);
+            engineThread.Start();
         }
 
         private Icon CreateAppIcon()
@@ -149,224 +160,249 @@ namespace NowcastPure
             }
         }
 
-        private void OnTick(object sender, EventArgs e)
+        private void EngineLoop()
         {
+            while (!isStopping)
+            {
+                try
+                {
+                    RunEngineTick();
+                }
+                catch (Exception ex)
+                {
+                    try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), "EngineLoop error: " + ex + "\r\n"); } catch { }
+                }
+
+                wakeEvent.WaitOne(1000);
+            }
+        }
+
+        private void RunEngineTick()
+        {
+            var track = mediaManager.GetCurrentTrack();
             try
             {
-                var track = mediaManager.GetCurrentTrack();
-
-                // 1. Update Discord connection status in menu
-                discordMenuItem.Text = discordRpc.IsConnected ? "Discord: Подключен" : "Discord: Не подключен";
-
-                // 2. Filter out ignored apps
-                if (track != null)
-                {
-                    var sourceCheck = AppSources.Detect(track.AppId, track.Title);
-                    if (sourceCheck.IsTelegram && settings.IgnoreTelegram)
-                    {
-                        track = null;
-                    }
-                    else if (sourceCheck.IsBrowser && settings.IgnoreBrowser)
-                    {
-                        track = null;
-                    }
-                }
-
-                // 3. Clean track title from brackets if enabled
-                if (track != null && settings.CleanTitles)
-                {
-                    track.Title = TextCleaner.CleanTitle(track.Title);
-                }
-
-                long nowSec = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
-
-                // 4. Handle Stopped / Paused
-                if (track == null || !track.IsPlaying)
-                {
-                    activeTrackKey = null;
-                    currentTrackStartSec = null;
-                    currentTrackEndSec = null;
-                    lastSentPlaying = false;
-                    lastSentArtworkUrl = null;
-
-                    if (settings.AfkMode)
-                    {
-                        if (!afkStartSec.HasValue)
-                        {
-                            afkStartSec = nowSec;
-                            if (lastTrack != null && !string.IsNullOrEmpty(lastTrack.Title))
-                            {
-                                afkLastTrackTitle = (string.IsNullOrEmpty(lastTrack.Artist) ? lastTrack.Title : lastTrack.Artist + " - " + lastTrack.Title);
-                                afkLastArtworkUrl = lastArtworkUrl;
-                            }
-                        }
-
-                        if (!isAfkSent || (DateTime.UtcNow - lastSentTime).TotalSeconds > 60)
-                        {
-                            string stateText = !string.IsNullOrEmpty(afkLastTrackTitle) ? "Ранее: " + afkLastTrackTitle : "Отошел";
-                            string afkIcon = !string.IsNullOrEmpty(afkLastArtworkUrl) ? afkLastArtworkUrl : null;
-                            discordRpc.SetAfkActivity("AFK", stateText, afkStartSec.Value, afkIcon);
-                            isAfkSent = true;
-                            lastSentTime = DateTime.UtcNow;
-                        }
-
-                        trackMenuItem.Text = "AFK";
-                        SafeSetNotifyText("Nowcast: AFK");
-                    }
-                    else
-                    {
-                        if (isAfkSent || lastTrack != null)
-                        {
-                            discordRpc.ClearActivity();
-                            isAfkSent = false;
-                        }
-
-                        if (track != null && !track.IsPlaying)
-                        {
-                            trackMenuItem.Text = "Пауза: " + Truncate(track.Title, 25);
-                            SafeSetNotifyText("Nowcast: Пауза");
-                        }
-                        else
-                        {
-                            trackMenuItem.Text = "Ожидание трека";
-                            SafeSetNotifyText("Nowcast: Ожидание");
-                        }
-                    }
-
-                    if (track != null) lastTrack = track;
-                    return;
-                }
-
-                // 5. Music is actively PLAYING!
-                isAfkSent = false;
-                afkStartSec = null;
-
-                string displayTrack = (string.IsNullOrEmpty(track.Artist) ? track.Title : track.Artist + " - " + track.Title);
-                trackMenuItem.Text = "Трек: " + Truncate(displayTrack, 30);
-                SafeSetNotifyText("Nowcast: " + Truncate(displayTrack, 40));
-
-                // Track identity & changes
-                string trackKey = (track.AppId ?? string.Empty) + "|" + (track.Artist ?? string.Empty) + "|" + (track.Title ?? string.Empty) + "|" + (track.Album ?? string.Empty);
-                bool trackChanged = !string.Equals(activeTrackKey, trackKey, StringComparison.Ordinal);
-
-                bool seekHappened = false;
-
-                if (trackChanged || !currentTrackStartSec.HasValue)
-                {
-                    currentTrackStartSec = nowSec - (long)track.PositionSec;
-                    if (track.DurationSec > 0)
-                        currentTrackEndSec = currentTrackStartSec.Value + (long)track.DurationSec;
-                    else
-                        currentTrackEndSec = null;
-
-                    lastReportedPosition = track.PositionSec;
-                    activeTrackKey = trackKey;
-                }
-                else
-                {
-                    // A seek can ONLY occur if the player actively reported a DIFFERENT position from before
-                    if (Math.Abs(track.PositionSec - lastReportedPosition) > 0.5)
-                    {
-                        long expectedPos = nowSec - currentTrackStartSec.Value;
-                        if (Math.Abs(expectedPos - (long)track.PositionSec) > 3)
-                        {
-                            currentTrackStartSec = nowSec - (long)track.PositionSec;
-                            if (track.DurationSec > 0)
-                                currentTrackEndSec = currentTrackStartSec.Value + (long)track.DurationSec;
-                            else
-                                currentTrackEndSec = null;
-
-                            seekHappened = true;
-                        }
-                        lastReportedPosition = track.PositionSec;
-                    }
-                }
-
-                var source = AppSources.Detect(track.AppId, track.Title);
-
-                // Artwork
-                if (source.IsVideo)
-                {
-                    // Fastly GitHub raw CDN (always 200, never blocked by Discord media proxy)
-                    if (source.Name.IndexOf("Twitch", StringComparison.OrdinalIgnoreCase) >= 0)
-                        lastArtworkUrl = "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/twitch.png";
-                    else
-                        lastArtworkUrl = "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/youtube.png";
-                }
-                else
-                {
-                    if (trackChanged || (DateTime.UtcNow - lastArtworkCheck).TotalMinutes > 10)
-                    {
-                        string artArtist = track.Artist;
-                        string artTitle = track.Title;
-                        string artKey = trackKey;
-                        lastArtworkCheck = DateTime.UtcNow;
-
-                        string cached = ArtworkService.GetCachedUrl(artArtist, artTitle);
-                        if (!string.IsNullOrEmpty(cached))
-                        {
-                            lastArtworkUrl = cached;
-                        }
-                        else
-                        {
-                            System.Threading.Tasks.Task.Run(() =>
-                            {
-                                string url = ArtworkService.GetArtworkUrl(artArtist, artTitle);
-                                if (!string.IsNullOrEmpty(url) && activeTrackKey == artKey)
-                                {
-                                    lastArtworkUrl = url;
-                                }
-                            });
-                        }
-                    }
-                }
-
-                bool artworkChanged = (lastArtworkUrl != lastSentArtworkUrl && !string.IsNullOrEmpty(lastArtworkUrl));
-                bool shouldSend = trackChanged || seekHappened || (!lastSentPlaying) || artworkChanged || ((DateTime.UtcNow - lastSentTime).TotalSeconds > 60);
-
-                if (shouldSend)
-                {
-                    string searchQuery = Uri.EscapeDataString(((track.Artist ?? string.Empty) + " " + (track.Title ?? string.Empty)).Trim());
-                    
-                    // Button 1: YouTube
-                    string btn1Label = source.IsVideo ? "Смотреть" : "Слушать на YouTube";
-                    string btn1Url = "https://www.youtube.com/results?search_query=" + searchQuery;
-
-                    // Button 2: Native Player (e.g. Yandex Music, Spotify, VK, Apple Music)
-                    string btn2Label = null;
-                    string btn2Url = null;
-                    if (!string.IsNullOrEmpty(source.SearchPrefix))
-                    {
-                        btn2Label = source.Name;
-                        btn2Url = source.SearchPrefix + searchQuery;
-                    }
-
-                    discordRpc.SetActivity(
-                        source.ClientId,
-                        track.Title,
-                        track.Artist,
-                        track.Album,
-                        source.Name,
-                        lastArtworkUrl,
-                        btn1Label,
-                        btn1Url,
-                        btn2Label,
-                        btn2Url,
-                        currentTrackStartSec,
-                        currentTrackEndSec,
-                        source.IsVideo
-                    );
-
-                    lastSentPlaying = true;
-                    lastSentArtworkUrl = lastArtworkUrl;
-                    lastSentTime = DateTime.UtcNow;
-                }
-
-                lastTrack = track;
+                string tStr = (track == null ? "NULL" : track.Artist + " - " + track.Title + " | Playing=" + track.IsPlaying + " | AppId=" + track.AppId);
+                File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), DateTime.Now.ToString("HH:mm:ss") + " EngineTick: " + tStr + "\r\n");
             }
-            catch
+            catch { }
+
+            // 1. Filter out ignored apps
+            if (track != null)
             {
-                // Background safety
+                var sourceCheck = AppSources.Detect(track.AppId, track.Title);
+                if (sourceCheck.IsTelegram && settings.IgnoreTelegram)
+                {
+                    track = null;
+                }
+                else if (sourceCheck.IsBrowser && settings.IgnoreBrowser)
+                {
+                    track = null;
+                }
+            }
+
+            // 2. Clean track title from brackets if enabled
+            if (track != null && settings.CleanTitles)
+            {
+                track.Title = TextCleaner.CleanTitle(track.Title);
+            }
+
+            long nowSec = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+
+            // 3. Handle Stopped / Paused
+            if (track == null || !track.IsPlaying)
+            {
+                activeTrackKey = null;
+                currentTrackStartSec = null;
+                currentTrackEndSec = null;
+                lastSentPlaying = false;
+                lastSentArtworkUrl = null;
+
+                if (settings.AfkMode)
+                {
+                    if (!afkStartSec.HasValue)
+                    {
+                        afkStartSec = nowSec;
+                        if (lastTrack != null && !string.IsNullOrEmpty(lastTrack.Title))
+                        {
+                            afkLastTrackTitle = (string.IsNullOrEmpty(lastTrack.Artist) ? lastTrack.Title : lastTrack.Artist + " - " + lastTrack.Title);
+                            afkLastArtworkUrl = lastArtworkUrl;
+                        }
+                    }
+
+                    if (!isAfkSent || (DateTime.UtcNow - lastSentTime).TotalSeconds > 60)
+                    {
+                        string stateText = !string.IsNullOrEmpty(afkLastTrackTitle) ? "Ранее: " + afkLastTrackTitle : "Отошел";
+                        string afkIcon = !string.IsNullOrEmpty(afkLastArtworkUrl) ? afkLastArtworkUrl : null;
+                        discordRpc.SetAfkActivity("AFK", stateText, afkStartSec.Value, afkIcon);
+                        isAfkSent = true;
+                        lastSentTime = DateTime.UtcNow;
+                    }
+
+                    UpdateUiAsync("AFK", "Nowcast: AFK");
+                }
+                else
+                {
+                    if (isAfkSent || lastTrack != null)
+                    {
+                        discordRpc.ClearActivity();
+                        isAfkSent = false;
+                    }
+
+                    if (track != null && !track.IsPlaying)
+                    {
+                        UpdateUiAsync("Пауза: " + Truncate(track.Title, 25), "Nowcast: Пауза");
+                    }
+                    else
+                    {
+                        UpdateUiAsync("Ожидание трека", "Nowcast: Ожидание");
+                    }
+                }
+
+                if (track != null) lastTrack = track;
+                return;
+            }
+
+            // 4. Music is actively PLAYING!
+            isAfkSent = false;
+            afkStartSec = null;
+
+            string displayTrack = (string.IsNullOrEmpty(track.Artist) ? track.Title : track.Artist + " - " + track.Title);
+            UpdateUiAsync("Трек: " + Truncate(displayTrack, 30), "Nowcast: " + Truncate(displayTrack, 40));
+
+            // Track identity & changes
+            string trackKey = (track.AppId ?? string.Empty) + "|" + (track.Artist ?? string.Empty) + "|" + (track.Title ?? string.Empty) + "|" + (track.Album ?? string.Empty);
+            bool trackChanged = !string.Equals(activeTrackKey, trackKey, StringComparison.Ordinal);
+
+            bool seekHappened = false;
+
+            if (trackChanged || !currentTrackStartSec.HasValue)
+            {
+                currentTrackStartSec = nowSec - (long)track.PositionSec;
+                if (track.DurationSec > 0)
+                    currentTrackEndSec = currentTrackStartSec.Value + (long)track.DurationSec;
+                else
+                    currentTrackEndSec = null;
+
+                lastReportedPosition = track.PositionSec;
+                activeTrackKey = trackKey;
+            }
+            else
+            {
+                if (Math.Abs(track.PositionSec - lastReportedPosition) > 0.5)
+                {
+                    long expectedPos = nowSec - currentTrackStartSec.Value;
+                    if (Math.Abs(expectedPos - (long)track.PositionSec) > 3)
+                    {
+                        currentTrackStartSec = nowSec - (long)track.PositionSec;
+                        if (track.DurationSec > 0)
+                            currentTrackEndSec = currentTrackStartSec.Value + (long)track.DurationSec;
+                        else
+                            currentTrackEndSec = null;
+
+                        seekHappened = true;
+                    }
+                    lastReportedPosition = track.PositionSec;
+                }
+            }
+
+            var source = AppSources.Detect(track.AppId, track.Title);
+
+            // Artwork
+            if (source.IsVideo)
+            {
+                if (source.Name.IndexOf("Twitch", StringComparison.OrdinalIgnoreCase) >= 0)
+                    lastArtworkUrl = "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/twitch.png";
+                else
+                    lastArtworkUrl = "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/youtube.png";
+            }
+            else
+            {
+                if (trackChanged || (DateTime.UtcNow - lastArtworkCheck).TotalMinutes > 10)
+                {
+                    string artArtist = track.Artist;
+                    string artTitle = track.Title;
+                    string artKey = trackKey;
+                    lastArtworkCheck = DateTime.UtcNow;
+
+                    string cached = ArtworkService.GetCachedUrl(artArtist, artTitle);
+                    if (!string.IsNullOrEmpty(cached))
+                    {
+                        lastArtworkUrl = cached;
+                    }
+                    else
+                    {
+                        System.Threading.Tasks.Task.Run(() =>
+                        {
+                            string url = ArtworkService.GetArtworkUrl(artArtist, artTitle);
+                            if (!string.IsNullOrEmpty(url) && activeTrackKey == artKey)
+                            {
+                                lastArtworkUrl = url;
+                                wakeEvent.Set();
+                            }
+                        });
+                    }
+                }
+            }
+
+            bool artworkChanged = (lastArtworkUrl != lastSentArtworkUrl && !string.IsNullOrEmpty(lastArtworkUrl));
+            bool shouldSend = trackChanged || seekHappened || (!lastSentPlaying) || artworkChanged || ((DateTime.UtcNow - lastSentTime).TotalSeconds > 60);
+
+            if (shouldSend)
+            {
+                string searchQuery = Uri.EscapeDataString(((track.Artist ?? string.Empty) + " " + (track.Title ?? string.Empty)).Trim());
+
+                // Button 1: YouTube
+                string btn1Label = source.IsVideo ? "Смотреть" : "Слушать на YouTube";
+                string btn1Url = "https://www.youtube.com/results?search_query=" + searchQuery;
+
+                // Button 2: Native Player (e.g. Yandex Music, Spotify, VK, Apple Music)
+                string btn2Label = null;
+                string btn2Url = null;
+                if (!string.IsNullOrEmpty(source.SearchPrefix))
+                {
+                    btn2Label = source.Name;
+                    btn2Url = source.SearchPrefix + searchQuery;
+                }
+
+                discordRpc.SetActivity(
+                    source.ClientId,
+                    track.Title,
+                    track.Artist,
+                    track.Album,
+                    source.Name,
+                    lastArtworkUrl,
+                    btn1Label,
+                    btn1Url,
+                    btn2Label,
+                    btn2Url,
+                    currentTrackStartSec,
+                    currentTrackEndSec,
+                    source.IsVideo
+                );
+
+                lastSentPlaying = true;
+                lastSentArtworkUrl = lastArtworkUrl;
+                lastSentTime = DateTime.UtcNow;
+            }
+
+            lastTrack = track;
+        }
+
+        private void UpdateUiAsync(string trackText, string tooltipText)
+        {
+            if (uiControl != null && uiControl.IsHandleCreated)
+            {
+                uiControl.BeginInvoke(new Action(() =>
+                {
+                    try
+                    {
+                        discordMenuItem.Text = discordRpc.IsConnected ? "Discord: Подключен" : "Discord: Не подключен";
+                        trackMenuItem.Text = trackText;
+                        SafeSetNotifyText(tooltipText);
+                    }
+                    catch { }
+                }));
             }
         }
 
@@ -374,7 +410,7 @@ namespace NowcastPure
         {
             try
             {
-                if (string.IsNullOrEmpty(text)) text = "Nowcast";
+                if (string.IsNullOrEmpty(text)) text = "Nowcast Pure";
                 if (text.Length >= 64) text = text.Substring(0, 60) + "...";
                 notifyIcon.Text = text;
             }
@@ -388,12 +424,13 @@ namespace NowcastPure
             return str.Substring(0, maxLen - 3) + "...";
         }
 
+        // Instant menu toggles with 0ms UI blocking
         private void OnToggleAfk(object sender, EventArgs e)
         {
             settings.AfkMode = !settings.AfkMode;
             afkMenuItem.Checked = settings.AfkMode;
             settings.Save();
-            OnTick(null, EventArgs.Empty);
+            wakeEvent.Set();
         }
 
         private void OnToggleCleanTitles(object sender, EventArgs e)
@@ -401,8 +438,8 @@ namespace NowcastPure
             settings.CleanTitles = !settings.CleanTitles;
             cleanTitlesMenuItem.Checked = settings.CleanTitles;
             settings.Save();
-            activeTrackKey = null; // force refresh
-            OnTick(null, EventArgs.Empty);
+            activeTrackKey = null;
+            wakeEvent.Set();
         }
 
         private void OnToggleIgnoreTelegram(object sender, EventArgs e)
@@ -411,7 +448,7 @@ namespace NowcastPure
             ignoreTelegramMenuItem.Checked = settings.IgnoreTelegram;
             settings.Save();
             activeTrackKey = null;
-            OnTick(null, EventArgs.Empty);
+            wakeEvent.Set();
         }
 
         private void OnToggleIgnoreBrowser(object sender, EventArgs e)
@@ -420,7 +457,7 @@ namespace NowcastPure
             ignoreBrowserMenuItem.Checked = settings.IgnoreBrowser;
             settings.Save();
             activeTrackKey = null;
-            OnTick(null, EventArgs.Empty);
+            wakeEvent.Set();
         }
 
         private bool IsAutostartEnabled()
@@ -483,11 +520,19 @@ namespace NowcastPure
 
         private void OnExit(object sender, EventArgs e)
         {
-            timer.Stop();
-            timer.Dispose();
+            isStopping = true;
+            wakeEvent.Set();
+            if (engineThread != null)
+            {
+                try { engineThread.Join(2000); } catch { }
+            }
             discordRpc.Dispose();
             notifyIcon.Visible = false;
             notifyIcon.Dispose();
+            if (uiControl != null)
+            {
+                try { uiControl.Dispose(); } catch { }
+            }
             Application.Exit();
         }
     }

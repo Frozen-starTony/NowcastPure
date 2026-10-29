@@ -70,34 +70,78 @@ namespace NowcastPure
         private object Await(object asyncOp, Type resultType, int timeoutMs = 2000)
         {
             if (asyncOp == null || asTaskMethod == null) return null;
+            var prev = System.Threading.SynchronizationContext.Current;
             try
             {
+                System.Threading.SynchronizationContext.SetSynchronizationContext(null);
                 var genericAsTask = asTaskMethod.MakeGenericMethod(resultType);
                 var task = (Task)genericAsTask.Invoke(null, new[] { asyncOp });
-                if (!task.Wait(timeoutMs)) return null;
+                if (!task.Wait(timeoutMs))
+                {
+                    try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), "Await TIMED OUT (" + timeoutMs + "ms), status=" + task.Status + "\r\n"); } catch { }
+                    return null;
+                }
                 return task.GetType().GetProperty("Result").GetValue(task, null);
             }
-            catch
+            catch (Exception ex)
             {
+                try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), "Await EXCEPTION: " + ex + "\r\n"); } catch { }
                 return null;
+            }
+            finally
+            {
+                System.Threading.SynchronizationContext.SetSynchronizationContext(prev);
             }
         }
 
         private object managerInstance;
+        private Task<object> managerInitTask;
+        private DateTime lastInitAttempt = DateTime.MinValue;
 
         private object GetManager()
         {
             if (managerInstance != null) return managerInstance;
-            try
+
+            if (managerInitTask != null)
             {
-                var managerAsync = requestAsyncMethod.Invoke(null, null);
-                managerInstance = Await(managerAsync, managerType, 5000);
+                if (managerInitTask.IsCompleted)
+                {
+                    if (managerInitTask.Status == TaskStatus.RanToCompletion && managerInitTask.Result != null)
+                    {
+                        managerInstance = managerInitTask.Result;
+                        try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), DateTime.Now.ToString("HH:mm:ss") + " MediaManager: manager initialized successfully!\r\n"); } catch { }
+                    }
+                    else
+                    {
+                        managerInitTask = null; // will retry after cooldown
+                    }
+                }
+                return managerInstance;
             }
-            catch
+
+            // Only attempt initialization once every 15 seconds to avoid blocking Windows RPC
+            if ((DateTime.UtcNow - lastInitAttempt).TotalSeconds < 15)
             {
-                managerInstance = null;
+                return null;
             }
-            return managerInstance;
+            lastInitAttempt = DateTime.UtcNow;
+
+            managerInitTask = Task.Run(() =>
+            {
+                try
+                {
+                    if (requestAsyncMethod == null) return null;
+                    var asyncOp = requestAsyncMethod.Invoke(null, null);
+                    return Await(asyncOp, managerType, 8000);
+                }
+                catch (Exception ex)
+                {
+                    try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), DateTime.Now.ToString("HH:mm:ss") + " RequestAsync error: " + ex.Message + "\r\n"); } catch { }
+                    return null;
+                }
+            });
+
+            return null;
         }
 
         private TrackSnapshot ExtractSnapshot(object session, bool? knownPlaying = null)
@@ -212,7 +256,11 @@ namespace NowcastPure
             try
             {
                 var manager = GetManager();
-                if (manager == null) return null;
+                try { File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), DateTime.Now.ToString("HH:mm:ss") + " MediaManager: manager=" + (manager == null ? "NULL" : "OK") + "\r\n"); } catch { }
+                if (manager == null)
+                {
+                    return GetTrackFromWindows();
+                }
 
                 var getSessionsMethod = managerType.GetMethod("GetSessions");
                 var sessionsList = new List<TrackSnapshot>();
@@ -233,6 +281,11 @@ namespace NowcastPure
                     }
                 }
 
+                try { 
+                    string sInfo = "Count=" + sessionsList.Count + " -> " + string.Join("; ", sessionsList.Select(s => s.AppId + ":" + s.Title + ":" + s.IsPlaying));
+                    File.AppendAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "run.log"), DateTime.Now.ToString("HH:mm:ss") + " Sessions: " + sInfo + "\r\n"); 
+                } catch { }
+
                 // If any session is actively playing, pick from playing ones
                 var playingSessions = sessionsList.Where(t => t.IsPlaying).ToList();
                 if (playingSessions.Count > 0)
@@ -240,6 +293,13 @@ namespace NowcastPure
                     var timed = playingSessions.Where(t => t.DurationSec > 0).ToList();
                     if (timed.Count > 0) return timed[0];
                     return playingSessions[0];
+                }
+
+                // If nothing playing in SMTC, check desktop windows first before assuming paused
+                var windowFallback = GetTrackFromWindows();
+                if (windowFallback != null && windowFallback.IsPlaying)
+                {
+                    return windowFallback;
                 }
 
                 // If nothing playing, check GetCurrentSession for paused track
@@ -260,13 +320,139 @@ namespace NowcastPure
                     return sessionsList[0];
                 }
 
-                return null;
+                return windowFallback;
             }
             catch
             {
                 managerInstance = null;
-                return null;
+                return GetTrackFromWindows();
             }
+        }
+
+        public static TrackSnapshot GetTrackFromWindows()
+        {
+            try
+            {
+                var titles = WindowTitles.Read();
+                foreach (var rawTitle in titles)
+                {
+                    if (string.IsNullOrWhiteSpace(rawTitle)) continue;
+
+                    // 1. YouTube in Chrome / Edge / Firefox / Opera
+                    int ytIdx = rawTitle.IndexOf(" - YouTube", StringComparison.OrdinalIgnoreCase);
+                    if (ytIdx > 0)
+                    {
+                        string mediaPart = rawTitle.Substring(0, ytIdx).Trim();
+                        string artist = null;
+                        string title = mediaPart;
+                        int dash = mediaPart.IndexOf(" - ");
+                        if (dash > 0)
+                        {
+                            artist = mediaPart.Substring(0, dash).Trim();
+                            title = mediaPart.Substring(dash + 3).Trim();
+                        }
+                        return new TrackSnapshot
+                        {
+                            AppId = "chrome.exe",
+                            Artist = artist,
+                            Title = title,
+                            IsPlaying = true
+                        };
+                    }
+
+                    // 2. Yandex Music
+                    if (rawTitle.IndexOf("Яндекс Музыка", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string clean = rawTitle;
+                        clean = clean.Replace("— Яндекс Музыка", "").Replace("- Яндекс Музыка", "").Trim();
+                        if (clean.StartsWith("Яндекс Музыка", StringComparison.OrdinalIgnoreCase))
+                        {
+                            clean = clean.Substring("Яндекс Музыка".Length).Trim(new[] { ' ', '—', '-' });
+                        }
+
+                        if (!string.IsNullOrEmpty(clean) && !clean.StartsWith("собираем музыку", StringComparison.OrdinalIgnoreCase))
+                        {
+                            string artist = null;
+                            string title = clean;
+                            int dash = clean.IndexOf(" — ");
+                            if (dash < 0) dash = clean.IndexOf(" - ");
+                            if (dash > 0)
+                            {
+                                artist = clean.Substring(0, dash).Trim();
+                                title = clean.Substring(dash + 3).Trim();
+                            }
+                            return new TrackSnapshot
+                            {
+                                AppId = "ru.yandex.desktop.music",
+                                Artist = artist,
+                                Title = title,
+                                IsPlaying = true
+                            };
+                        }
+                    }
+
+                    // 3. Spotify
+                    if (rawTitle.EndsWith(" - Spotify", StringComparison.OrdinalIgnoreCase))
+                    {
+                        string part = rawTitle.Substring(0, rawTitle.Length - 10).Trim();
+                        string artist = null;
+                        string title = part;
+                        int dash = part.IndexOf(" - ");
+                        if (dash > 0)
+                        {
+                            artist = part.Substring(0, dash).Trim();
+                            title = part.Substring(dash + 3).Trim();
+                        }
+                        return new TrackSnapshot
+                        {
+                            AppId = "spotify.exe",
+                            Artist = artist,
+                            Title = title,
+                            IsPlaying = true
+                        };
+                    }
+
+                    // 4. SoundCloud
+                    if (rawTitle.IndexOf("SoundCloud", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        string part = rawTitle.Replace("SoundCloud", "").Trim(new[] { ' ', '|', '-', '—' });
+                        int dash = part.IndexOf(" - ");
+                        string artist = null;
+                        string title = part;
+                        if (dash > 0)
+                        {
+                            artist = part.Substring(0, dash).Trim();
+                            title = part.Substring(dash + 3).Trim();
+                        }
+                        return new TrackSnapshot
+                        {
+                            AppId = "soundcloud",
+                            Artist = artist,
+                            Title = title,
+                            IsPlaying = true
+                        };
+                    }
+
+                    // 5. VK Music
+                    if (rawTitle.IndexOf("ВКонтакте", StringComparison.OrdinalIgnoreCase) >= 0 && rawTitle.IndexOf(" - ") > 0)
+                    {
+                        string part = rawTitle.Substring(0, rawTitle.IndexOf("ВКонтакте")).Trim(new[] { ' ', '|', '-', '—' });
+                        int dash = part.IndexOf(" - ");
+                        if (dash > 0)
+                        {
+                            return new TrackSnapshot
+                            {
+                                AppId = "vk.com",
+                                Artist = part.Substring(0, dash).Trim(),
+                                Title = part.Substring(dash + 3).Trim(),
+                                IsPlaying = true
+                            };
+                        }
+                    }
+                }
+            }
+            catch { }
+            return null;
         }
     }
 }

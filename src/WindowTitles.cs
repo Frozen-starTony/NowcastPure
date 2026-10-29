@@ -10,13 +10,16 @@ namespace NowcastPure
         private delegate bool EnumWindowsProc(IntPtr window, IntPtr parameter);
 
         [DllImport("user32.dll")]
-        private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
+        private static extern IntPtr OpenInputDesktop(uint dwFlags, bool fInherit, uint dwDesiredAccess);
 
         [DllImport("user32.dll")]
-        private static extern bool IsWindowVisible(IntPtr window);
+        private static extern bool EnumDesktopWindows(IntPtr hDesktop, EnumWindowsProc callback, IntPtr parameter);
 
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        private static extern int GetWindowTextLength(IntPtr window);
+        [DllImport("user32.dll")]
+        private static extern bool CloseDesktop(IntPtr hDesktop);
+
+        [DllImport("user32.dll")]
+        private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr parameter);
 
         [DllImport("user32.dll", CharSet = CharSet.Unicode)]
         private static extern int GetWindowText(IntPtr window, StringBuilder text, int size);
@@ -26,20 +29,36 @@ namespace NowcastPure
             var titles = new List<string>();
             try
             {
-                EnumWindows((window, parameter) =>
+                IntPtr hDesk = OpenInputDesktop(0, false, 0x0100 /* DESKTOP_READOBJECTS */);
+                if (hDesk != IntPtr.Zero)
                 {
-                    if (!IsWindowVisible(window)) return true;
-                    int length = GetWindowTextLength(window);
-                    if (length <= 0) return true;
-                    var sb = new StringBuilder(length + 1);
-                    GetWindowText(window, sb, sb.Capacity);
-                    string t = sb.ToString().Trim();
-                    if (!string.IsNullOrEmpty(t))
+                    EnumDesktopWindows(hDesk, (window, parameter) =>
                     {
-                        titles.Add(t);
-                    }
-                    return true;
-                }, IntPtr.Zero);
+                        var sb = new StringBuilder(512);
+                        GetWindowText(window, sb, sb.Capacity);
+                        string t = sb.ToString().Trim();
+                        if (!string.IsNullOrEmpty(t))
+                        {
+                            titles.Add(t);
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+                    CloseDesktop(hDesk);
+                }
+                else
+                {
+                    EnumWindows((window, parameter) =>
+                    {
+                        var sb = new StringBuilder(512);
+                        GetWindowText(window, sb, sb.Capacity);
+                        string t = sb.ToString().Trim();
+                        if (!string.IsNullOrEmpty(t))
+                        {
+                            titles.Add(t);
+                        }
+                        return true;
+                    }, IntPtr.Zero);
+                }
             }
             catch { }
             return titles;
