@@ -52,57 +52,57 @@ namespace NowcastPure
 
             var contextMenu = new ContextMenu();
 
-            var titleItem = new MenuItem("🎵 Nowcast Pure (v1.2)");
+            var titleItem = new MenuItem("Nowcast Pure");
             titleItem.Enabled = false;
             contextMenu.MenuItems.Add(titleItem);
 
             contextMenu.MenuItems.Add("-");
 
-            trackMenuItem = new MenuItem("⚪ Ничего не играет");
+            trackMenuItem = new MenuItem("Ожидание трека...");
             trackMenuItem.Enabled = false;
             contextMenu.MenuItems.Add(trackMenuItem);
 
-            discordMenuItem = new MenuItem("🔌 Discord: Ожидание...");
+            discordMenuItem = new MenuItem("Discord: Ожидание...");
             discordMenuItem.Enabled = false;
             contextMenu.MenuItems.Add(discordMenuItem);
 
             contextMenu.MenuItems.Add("-");
 
-            afkMenuItem = new MenuItem("🌙 Режим AFK на паузе", OnToggleAfk);
+            afkMenuItem = new MenuItem("Режим AFK на паузе", OnToggleAfk);
             afkMenuItem.Checked = settings.AfkMode;
             contextMenu.MenuItems.Add(afkMenuItem);
 
-            cleanTitlesMenuItem = new MenuItem("🧹 Очищать названия от мусора", OnToggleCleanTitles);
+            cleanTitlesMenuItem = new MenuItem("Очищать названия от мусора", OnToggleCleanTitles);
             cleanTitlesMenuItem.Checked = settings.CleanTitles;
             contextMenu.MenuItems.Add(cleanTitlesMenuItem);
 
-            ignoreTelegramMenuItem = new MenuItem("🛡️ Игнорировать Telegram", OnToggleIgnoreTelegram);
+            ignoreTelegramMenuItem = new MenuItem("Игнорировать Telegram", OnToggleIgnoreTelegram);
             ignoreTelegramMenuItem.Checked = settings.IgnoreTelegram;
             contextMenu.MenuItems.Add(ignoreTelegramMenuItem);
 
-            ignoreBrowserMenuItem = new MenuItem("🛡️ Игнорировать браузеры", OnToggleIgnoreBrowser);
+            ignoreBrowserMenuItem = new MenuItem("Игнорировать браузеры", OnToggleIgnoreBrowser);
             ignoreBrowserMenuItem.Checked = settings.IgnoreBrowser;
             contextMenu.MenuItems.Add(ignoreBrowserMenuItem);
 
             contextMenu.MenuItems.Add("-");
 
-            autostartMenuItem = new MenuItem("🚀 Автозапуск с Windows", OnToggleAutostart);
+            autostartMenuItem = new MenuItem("Автозапуск с Windows", OnToggleAutostart);
             autostartMenuItem.Checked = IsAutostartEnabled();
             contextMenu.MenuItems.Add(autostartMenuItem);
 
-            var aboutItem = new MenuItem("ℹ️ О программе", OnAbout);
+            var aboutItem = new MenuItem("О программе", OnAbout);
             contextMenu.MenuItems.Add(aboutItem);
 
             contextMenu.MenuItems.Add("-");
 
-            var exitItem = new MenuItem("❌ Выход", OnExit);
+            var exitItem = new MenuItem("Выход", OnExit);
             contextMenu.MenuItems.Add(exitItem);
 
             notifyIcon = new NotifyIcon
             {
                 Icon = CreateAppIcon(),
                 ContextMenu = contextMenu,
-                Text = "Nowcast: Трек в Discord",
+                Text = "Nowcast Pure",
                 Visible = true
             };
 
@@ -156,7 +156,7 @@ namespace NowcastPure
                 var track = mediaManager.GetCurrentTrack();
 
                 // 1. Update Discord connection status in menu
-                discordMenuItem.Text = discordRpc.IsConnected ? "🟢 Discord: Подключен" : "🔴 Discord: Не подключен";
+                discordMenuItem.Text = discordRpc.IsConnected ? "Discord: Подключен" : "Discord: Не подключен";
 
                 // 2. Filter out ignored apps
                 if (track != null)
@@ -204,13 +204,13 @@ namespace NowcastPure
                         if (!isAfkSent || (DateTime.UtcNow - lastSentTime).TotalSeconds > 60)
                         {
                             string stateText = !string.IsNullOrEmpty(afkLastTrackTitle) ? "Ранее: " + afkLastTrackTitle : "Отошел";
-                            string afkIcon = "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f319.png";
+                            string afkIcon = !string.IsNullOrEmpty(afkLastArtworkUrl) ? afkLastArtworkUrl : "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/discord.png";
                             discordRpc.SetAfkActivity("AFK", stateText, afkStartSec.Value, afkIcon);
                             isAfkSent = true;
                             lastSentTime = DateTime.UtcNow;
                         }
 
-                        trackMenuItem.Text = "🌙 AFK";
+                        trackMenuItem.Text = "AFK";
                         SafeSetNotifyText("Nowcast: AFK");
                     }
                     else
@@ -223,13 +223,13 @@ namespace NowcastPure
 
                         if (track != null && !track.IsPlaying)
                         {
-                            trackMenuItem.Text = "⏸️ Пауза: " + Truncate(track.Title, 25);
-                            SafeSetNotifyText("Nowcast (Пауза)");
+                            trackMenuItem.Text = "Пауза: " + Truncate(track.Title, 25);
+                            SafeSetNotifyText("Nowcast: Пауза");
                         }
                         else
                         {
-                            trackMenuItem.Text = "⚪ Ничего не играет";
-                            SafeSetNotifyText("Nowcast (Ожидание)");
+                            trackMenuItem.Text = "Ожидание трека";
+                            SafeSetNotifyText("Nowcast: Ожидание");
                         }
                     }
 
@@ -242,7 +242,7 @@ namespace NowcastPure
                 afkStartSec = null;
 
                 string displayTrack = (string.IsNullOrEmpty(track.Artist) ? track.Title : track.Artist + " - " + track.Title);
-                trackMenuItem.Text = "▶ " + Truncate(displayTrack, 30);
+                trackMenuItem.Text = "Трек: " + Truncate(displayTrack, 30);
                 SafeSetNotifyText("Nowcast: " + Truncate(displayTrack, 40));
 
                 // Track identity & changes
@@ -297,8 +297,27 @@ namespace NowcastPure
                 {
                     if (trackChanged || (DateTime.UtcNow - lastArtworkCheck).TotalMinutes > 10)
                     {
-                        lastArtworkUrl = ArtworkService.GetArtworkUrl(track.Artist, track.Title);
+                        string artArtist = track.Artist;
+                        string artTitle = track.Title;
+                        string artKey = trackKey;
                         lastArtworkCheck = DateTime.UtcNow;
+
+                        string cached = ArtworkService.GetCachedUrl(artArtist, artTitle);
+                        if (!string.IsNullOrEmpty(cached))
+                        {
+                            lastArtworkUrl = cached;
+                        }
+                        else
+                        {
+                            System.Threading.Tasks.Task.Run(() =>
+                            {
+                                string url = ArtworkService.GetArtworkUrl(artArtist, artTitle);
+                                if (!string.IsNullOrEmpty(url) && activeTrackKey == artKey)
+                                {
+                                    lastArtworkUrl = url;
+                                }
+                            });
+                        }
                     }
                 }
 
@@ -452,12 +471,12 @@ namespace NowcastPure
         private void OnAbout(object sender, EventArgs e)
         {
             string info = "Nowcast Pure Edition v1.3\n\n" +
-                          "• Чистая, 100% безопасная версия без сторонних VPS и серверов.\n" +
-                          "• Режим AFK на паузе (стильный таймер 🌙).\n" +
-                          "• Двойные кнопки: YouTube + родной плеер (Яндекс Музыка/Spotify).\n" +
-                          "• Поддержка YouTube видео с официальным логотипом.\n" +
-                          "• Очистка названий от лишнего мусора ([Official Video], remix...).\n" +
-                          "• Защита от спама: фильтр Telegram и браузеров.\n\n" +
+                          "- Чистая версия без сторонних VPS и серверов.\n" +
+                          "- Режим AFK на паузе.\n" +
+                          "- Двойные кнопки: YouTube + родной плеер.\n" +
+                          "- Поддержка YouTube видео с официальным логотипом.\n" +
+                          "- Очистка названий от лишнего мусора.\n" +
+                          "- Защита от спама: фильтр Telegram и браузеров.\n\n" +
                           "Все настройки сохраняются в config.json.";
             MessageBox.Show(info, "О программе Nowcast Pure", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }

@@ -12,6 +12,16 @@ namespace NowcastPure
         [STAThread]
         static void Main()
         {
+            Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+            Application.ThreadException += (s, e) =>
+            {
+                try { System.IO.File.AppendAllText(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log"), DateTime.Now + " ThreadException: " + e.Exception + "\r\n"); } catch { }
+            };
+            AppDomain.CurrentDomain.UnhandledException += (s, e) =>
+            {
+                try { System.IO.File.AppendAllText(System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "error.log"), DateTime.Now + " UnhandledException: " + e.ExceptionObject + "\r\n"); } catch { }
+            };
+
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;

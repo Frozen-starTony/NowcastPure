@@ -15,6 +15,23 @@ namespace NowcastPure
         private static readonly object LockObj = new object();
         private static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
 
+        public static string GetCachedUrl(string artist, string title)
+        {
+            if (string.IsNullOrEmpty(title))
+                return null;
+
+            string query = (string.IsNullOrEmpty(artist) ? title : artist + " " + title).Trim();
+            string key = query.ToLowerInvariant();
+
+            lock (LockObj)
+            {
+                string cachedUrl;
+                if (Cache.TryGetValue(key, out cachedUrl))
+                    return cachedUrl;
+            }
+            return null;
+        }
+
         public static string GetArtworkUrl(string artist, string title)
         {
             if (string.IsNullOrEmpty(title))

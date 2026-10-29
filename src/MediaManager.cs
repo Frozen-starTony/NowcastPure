@@ -82,20 +82,28 @@ namespace NowcastPure
             }
         }
 
-        public TrackSnapshot GetCurrentTrack()
-        {
-            if (!IsAvailable) return null;
+        private object managerInstance;
 
+        private object GetManager()
+        {
+            if (managerInstance != null) return managerInstance;
             try
             {
                 var managerAsync = requestAsyncMethod.Invoke(null, null);
-                var manager = Await(managerAsync, managerType, 1500);
-                if (manager == null) return null;
+                managerInstance = Await(managerAsync, managerType, 1500);
+            }
+            catch
+            {
+                managerInstance = null;
+            }
+            return managerInstance;
+        }
 
-                var getSessionMethod = managerType.GetMethod("GetCurrentSession");
-                var session = getSessionMethod.Invoke(manager, null);
-                if (session == null) return null;
-
+        private TrackSnapshot ExtractSnapshot(object session, bool? knownPlaying = null)
+        {
+            if (session == null) return null;
+            try
+            {
                 var sessionType = session.GetType();
 
                 // 1. App ID
@@ -107,20 +115,23 @@ namespace NowcastPure
                 }
 
                 // 2. Playback status
-                bool isPlaying = false;
-                var getPlaybackInfoMethod = sessionType.GetMethod("GetPlaybackInfo");
-                if (getPlaybackInfoMethod != null)
+                bool isPlaying = knownPlaying ?? false;
+                if (!knownPlaying.HasValue)
                 {
-                    var playbackInfo = getPlaybackInfoMethod.Invoke(session, null);
-                    if (playbackInfo != null)
+                    var getPlaybackInfoMethod = sessionType.GetMethod("GetPlaybackInfo");
+                    if (getPlaybackInfoMethod != null)
                     {
-                        var statusProp = playbackInfo.GetType().GetProperty("PlaybackStatus");
-                        if (statusProp != null)
+                        var playbackInfo = getPlaybackInfoMethod.Invoke(session, null);
+                        if (playbackInfo != null)
                         {
-                            object statusVal = statusProp.GetValue(playbackInfo, null);
-                            if (statusVal != null && statusVal.ToString() == "Playing")
+                            var statusProp = playbackInfo.GetType().GetProperty("PlaybackStatus");
+                            if (statusProp != null)
                             {
-                                isPlaying = true;
+                                object statusVal = statusProp.GetValue(playbackInfo, null);
+                                if (statusVal != null && statusVal.ToString() == "Playing")
+                                {
+                                    isPlaying = true;
+                                }
                             }
                         }
                     }
@@ -131,7 +142,7 @@ namespace NowcastPure
                 var getPropsAsyncMethod = sessionType.GetMethod("TryGetMediaPropertiesAsync");
                 if (getPropsAsyncMethod != null && mediaPropsType != null)
                 {
-                    var mediaProps = Await(getPropsAsyncMethod.Invoke(session, null), mediaPropsType, 1500);
+                    var mediaProps = Await(getPropsAsyncMethod.Invoke(session, null), mediaPropsType, 500);
                     if (mediaProps != null)
                     {
                         var titleProp = mediaPropsType.GetProperty("Title");
@@ -145,7 +156,6 @@ namespace NowcastPure
                     }
                 }
 
-                // If no title, nothing useful is playing
                 if (string.IsNullOrEmpty(title))
                     return null;
 
@@ -186,6 +196,71 @@ namespace NowcastPure
             }
             catch
             {
+                return null;
+            }
+        }
+
+        public TrackSnapshot GetCurrentTrack()
+        {
+            if (!IsAvailable) return null;
+
+            try
+            {
+                var manager = GetManager();
+                if (manager == null) return null;
+
+                // 1. Search all sessions for an actively PLAYING session with a valid title
+                var getSessionsMethod = managerType.GetMethod("GetSessions");
+                if (getSessionsMethod != null)
+                {
+                    var sessionsEnum = getSessionsMethod.Invoke(manager, null) as System.Collections.IEnumerable;
+                    if (sessionsEnum != null)
+                    {
+                        foreach (var s in sessionsEnum)
+                        {
+                            var sType = s.GetType();
+                            var getPi = sType.GetMethod("GetPlaybackInfo");
+                            if (getPi != null)
+                            {
+                                var pi = getPi.Invoke(s, null);
+                                if (pi != null)
+                                {
+                                    var sp = pi.GetType().GetProperty("PlaybackStatus");
+                                    if (sp != null)
+                                    {
+                                        object val = sp.GetValue(pi, null);
+                                        if (val != null && val.ToString() == "Playing")
+                                        {
+                                            var snap = ExtractSnapshot(s, true);
+                                            if (snap != null && !string.IsNullOrEmpty(snap.Title))
+                                            {
+                                                return snap;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 2. If no actively playing session found, check GetCurrentSession (for paused info / AFK track memory)
+                var getSessionMethod = managerType.GetMethod("GetCurrentSession");
+                if (getSessionMethod != null)
+                {
+                    var curSession = getSessionMethod.Invoke(manager, null);
+                    if (curSession != null)
+                    {
+                        var snap = ExtractSnapshot(curSession);
+                        if (snap != null) return snap;
+                    }
+                }
+
+                return null;
+            }
+            catch
+            {
+                managerInstance = null;
                 return null;
             }
         }

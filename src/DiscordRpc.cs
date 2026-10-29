@@ -206,7 +206,7 @@ namespace NowcastPure
             try
             {
                 var activityDict = new Dictionary<string, object>();
-                activityDict["details"] = string.IsNullOrEmpty(details) ? "На перерыве ☕" : details;
+                activityDict["details"] = string.IsNullOrEmpty(details) ? "AFK" : details;
                 if (!string.IsNullOrEmpty(state))
                     activityDict["state"] = state;
 
@@ -215,11 +215,11 @@ namespace NowcastPure
                 activityDict["timestamps"] = ts;
 
                 var assets = new Dictionary<string, object>();
-                assets["large_image"] = !string.IsNullOrEmpty(artworkUrl) ? artworkUrl : "https://cdn-icons-png.flaticon.com/512/924/924514.png";
-                assets["large_text"] = "AFK / Пауза";
+                assets["large_image"] = !string.IsNullOrEmpty(artworkUrl) ? artworkUrl : "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/discord.png";
+                assets["large_text"] = "AFK";
                 activityDict["assets"] = assets;
 
-                activityDict["type"] = 0; // Playing (e.g. В игре: На перерыве ☕)
+                activityDict["type"] = 0; // Playing
 
                 var payload = new
                 {
