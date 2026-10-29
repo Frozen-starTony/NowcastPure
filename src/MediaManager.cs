@@ -370,10 +370,11 @@ namespace NowcastPure
                             clean = clean.Substring("Яндекс Музыка".Length).Trim(new[] { ' ', '—', '-' });
                         }
 
+                        string artist = "Яндекс Музыка";
+                        string title = "Моя волна";
+
                         if (!string.IsNullOrEmpty(clean) && !clean.StartsWith("собираем музыку", StringComparison.OrdinalIgnoreCase))
                         {
-                            string artist = null;
-                            string title = clean;
                             int dash = clean.IndexOf(" — ");
                             if (dash < 0) dash = clean.IndexOf(" - ");
                             if (dash > 0)
@@ -381,14 +382,19 @@ namespace NowcastPure
                                 artist = clean.Substring(0, dash).Trim();
                                 title = clean.Substring(dash + 3).Trim();
                             }
-                            return new TrackSnapshot
+                            else
                             {
-                                AppId = "ru.yandex.desktop.music",
-                                Artist = artist,
-                                Title = title,
-                                IsPlaying = true
-                            };
+                                title = clean;
+                            }
                         }
+
+                        return new TrackSnapshot
+                        {
+                            AppId = "ru.yandex.desktop.music",
+                            Artist = artist,
+                            Title = title,
+                            IsPlaying = true
+                        };
                     }
 
                     // 3. Spotify
