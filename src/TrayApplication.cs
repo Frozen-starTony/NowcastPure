@@ -204,7 +204,7 @@ namespace NowcastPure
                         if (!isAfkSent || (DateTime.UtcNow - lastSentTime).TotalSeconds > 60)
                         {
                             string stateText = !string.IsNullOrEmpty(afkLastTrackTitle) ? "Ранее: " + afkLastTrackTitle : "Отошел";
-                            string afkIcon = !string.IsNullOrEmpty(afkLastArtworkUrl) ? afkLastArtworkUrl : "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/discord.png";
+                            string afkIcon = !string.IsNullOrEmpty(afkLastArtworkUrl) ? afkLastArtworkUrl : null;
                             discordRpc.SetAfkActivity("AFK", stateText, afkStartSec.Value, afkIcon);
                             isAfkSent = true;
                             lastSentTime = DateTime.UtcNow;

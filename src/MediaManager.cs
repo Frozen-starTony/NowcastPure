@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
@@ -90,7 +91,7 @@ namespace NowcastPure
             try
             {
                 var managerAsync = requestAsyncMethod.Invoke(null, null);
-                managerInstance = Await(managerAsync, managerType, 1500);
+                managerInstance = Await(managerAsync, managerType, 5000);
             }
             catch
             {
@@ -128,9 +129,13 @@ namespace NowcastPure
                             if (statusProp != null)
                             {
                                 object statusVal = statusProp.GetValue(playbackInfo, null);
-                                if (statusVal != null && statusVal.ToString() == "Playing")
+                                if (statusVal != null)
                                 {
-                                    isPlaying = true;
+                                    string sStr = statusVal.ToString();
+                                    if (sStr == "Playing" || sStr == "4")
+                                    {
+                                        isPlaying = true;
+                                    }
                                 }
                             }
                         }
@@ -142,7 +147,7 @@ namespace NowcastPure
                 var getPropsAsyncMethod = sessionType.GetMethod("TryGetMediaPropertiesAsync");
                 if (getPropsAsyncMethod != null && mediaPropsType != null)
                 {
-                    var mediaProps = Await(getPropsAsyncMethod.Invoke(session, null), mediaPropsType, 500);
+                    var mediaProps = Await(getPropsAsyncMethod.Invoke(session, null), mediaPropsType, 2500);
                     if (mediaProps != null)
                     {
                         var titleProp = mediaPropsType.GetProperty("Title");
@@ -209,8 +214,9 @@ namespace NowcastPure
                 var manager = GetManager();
                 if (manager == null) return null;
 
-                // 1. Search all sessions for an actively PLAYING session with a valid title
                 var getSessionsMethod = managerType.GetMethod("GetSessions");
+                var sessionsList = new List<TrackSnapshot>();
+
                 if (getSessionsMethod != null)
                 {
                     var sessionsEnum = getSessionsMethod.Invoke(manager, null) as System.Collections.IEnumerable;
@@ -218,33 +224,25 @@ namespace NowcastPure
                     {
                         foreach (var s in sessionsEnum)
                         {
-                            var sType = s.GetType();
-                            var getPi = sType.GetMethod("GetPlaybackInfo");
-                            if (getPi != null)
+                            var snap = ExtractSnapshot(s);
+                            if (snap != null && !string.IsNullOrEmpty(snap.Title))
                             {
-                                var pi = getPi.Invoke(s, null);
-                                if (pi != null)
-                                {
-                                    var sp = pi.GetType().GetProperty("PlaybackStatus");
-                                    if (sp != null)
-                                    {
-                                        object val = sp.GetValue(pi, null);
-                                        if (val != null && val.ToString() == "Playing")
-                                        {
-                                            var snap = ExtractSnapshot(s, true);
-                                            if (snap != null && !string.IsNullOrEmpty(snap.Title))
-                                            {
-                                                return snap;
-                                            }
-                                        }
-                                    }
-                                }
+                                sessionsList.Add(snap);
                             }
                         }
                     }
                 }
 
-                // 2. If no actively playing session found, check GetCurrentSession (for paused info / AFK track memory)
+                // If any session is actively playing, pick from playing ones
+                var playingSessions = sessionsList.Where(t => t.IsPlaying).ToList();
+                if (playingSessions.Count > 0)
+                {
+                    var timed = playingSessions.Where(t => t.DurationSec > 0).ToList();
+                    if (timed.Count > 0) return timed[0];
+                    return playingSessions[0];
+                }
+
+                // If nothing playing, check GetCurrentSession for paused track
                 var getSessionMethod = managerType.GetMethod("GetCurrentSession");
                 if (getSessionMethod != null)
                 {
@@ -252,8 +250,14 @@ namespace NowcastPure
                     if (curSession != null)
                     {
                         var snap = ExtractSnapshot(curSession);
-                        if (snap != null) return snap;
+                        if (snap != null && !string.IsNullOrEmpty(snap.Title))
+                            return snap;
                     }
+                }
+
+                if (sessionsList.Count > 0)
+                {
+                    return sessionsList[0];
                 }
 
                 return null;

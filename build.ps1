@@ -28,8 +28,11 @@ $src = Join-Path $here 'src\*.cs'
 
 Write-Host "Compiling NowcastPure with native Windows compiler..." -ForegroundColor Cyan
 
+$manifest = Join-Path $here 'src\app.manifest'
+
 & $csc -nologo -target:winexe -optimize+ -codepage:65001 `
     "-out:$out" `
+    "-win32manifest:$manifest" `
     @references $src
 
 if ($LASTEXITCODE -ne 0) {

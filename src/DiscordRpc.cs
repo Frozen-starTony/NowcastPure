@@ -215,9 +215,12 @@ namespace NowcastPure
                 activityDict["timestamps"] = ts;
 
                 var assets = new Dictionary<string, object>();
-                assets["large_image"] = !string.IsNullOrEmpty(artworkUrl) ? artworkUrl : "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/discord.png";
-                assets["large_text"] = "AFK";
-                activityDict["assets"] = assets;
+                if (!string.IsNullOrEmpty(artworkUrl))
+                {
+                    assets["large_image"] = artworkUrl;
+                    assets["large_text"] = "AFK";
+                    activityDict["assets"] = assets;
+                }
 
                 activityDict["type"] = 0; // Playing
 

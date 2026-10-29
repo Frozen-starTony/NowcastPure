@@ -41,7 +41,7 @@ namespace NowcastPure
 
         private static readonly Rule[] Rules = new[]
         {
-            new Rule(@"yandex.*music|music.*yandex|яндекс.*музык", "Яндекс Музыка", "1563159088265822392", "https://music.yandex.ru/search?text="),
+            new Rule(@"yandex.*(music|desktop)|яндекс.*музык", "Яндекс Музыка", "1563159088265822392", "https://music.yandex.ru/search?text="),
             new Rule(@"spotify", "Spotify", "1563159215709749389", "https://open.spotify.com/search/"),
             new Rule(@"youtube.?music", "YouTube Music", "1563162689163886642", "https://music.youtube.com/search?q="),
             new Rule(@"soundcloud", "SoundCloud", "1563159356940361779", "https://soundcloud.com/search?q="),
@@ -67,8 +67,28 @@ namespace NowcastPure
                     return rule.Info;
             }
 
-            // If browser (chrome, msedge, firefox, brave, opera, vivaldi)
-            if (Regex.IsMatch(appId, @"chrome|msedge|edge|firefox|opera|brave|vivaldi|browser", RegexOptions.IgnoreCase))
+            // Check open window titles for browser media
+            try
+            {
+                var windows = WindowTitles.Read();
+                foreach (var win in windows)
+                {
+                    if (Regex.IsMatch(win, @"яндекс.*музык|music\.yandex", RegexOptions.IgnoreCase))
+                        return new SourceInfo("Яндекс Музыка", "1563159088265822392", "https://music.yandex.ru/search?text=");
+                    if (Regex.IsMatch(win, @"youtube.*music", RegexOptions.IgnoreCase))
+                        return new SourceInfo("YouTube Music", "1563162689163886642", "https://music.youtube.com/search?q=");
+                    if (Regex.IsMatch(win, @"\byoutube\b", RegexOptions.IgnoreCase))
+                        return new SourceInfo("YouTube", "1563159477673263216", "https://www.youtube.com/results?search_query=", true);
+                    if (Regex.IsMatch(win, @"soundcloud", RegexOptions.IgnoreCase))
+                        return new SourceInfo("SoundCloud", "1563159356940361779", "https://soundcloud.com/search?q=");
+                    if (Regex.IsMatch(win, @"vk.*(музык|music)|vkontakte", RegexOptions.IgnoreCase))
+                        return new SourceInfo("VK Музыка", "1563159553619525723", "https://vk.com/audio?q=");
+                }
+            }
+            catch { }
+
+            // If browser (chrome, msedge, firefox, brave, opera, vivaldi, yandex)
+            if (Regex.IsMatch(appId, @"chrome|msedge|edge|firefox|opera|brave|vivaldi|browser|yandex", RegexOptions.IgnoreCase))
             {
                 if (!string.IsNullOrEmpty(title))
                 {
@@ -83,6 +103,10 @@ namespace NowcastPure
                     if (Regex.IsMatch(title, @"vk|вконтакте", RegexOptions.IgnoreCase))
                         return new SourceInfo("VK Музыка", "1563159553619525723", "https://vk.com/audio?q=", false, true);
                 }
+
+                if (Regex.IsMatch(appId, @"yandex", RegexOptions.IgnoreCase))
+                    return new SourceInfo("Яндекс Музыка", "1563159088265822392", "https://music.yandex.ru/search?text=");
+
                 return new SourceInfo("Браузер", DefaultClientId, null, false, true);
             }
 
